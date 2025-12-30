@@ -1,0 +1,178 @@
+package com.bank;
+
+import java.math.BigDecimal;
+import java.sql.*;
+import java.util.Scanner;
+
+public class BankingService {
+    private static Scanner sc = new Scanner(System.in);
+
+    // Account Creation
+    public void createAccount() {
+        try (Connection conn = DBConnection.getConnection()) {
+            System.out.print("Enter name: ");
+            String name = sc.nextLine();
+            System.out.print("Enter email: ");
+            String email = sc.nextLine();
+            System.out.print("Enter initial deposit: ");
+            BigDecimal amount = sc.nextBigDecimal();
+            sc.nextLine();
+
+            PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO accounts(name, email, balance) VALUES (?, ?, ?)", Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, name);
+            ps.setString(2, email);
+            ps.setBigDecimal(3, amount);
+            ps.executeUpdate();
+
+            ResultSet rs = ps.getGeneratedKeys();
+            if (rs.next()) {
+                System.out.println("Account created! Account No: " + rs.getLong(1));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Deposit
+    public void deposit() {
+        try (Connection conn = DBConnection.getConnection()) {
+            System.out.print("Enter account number: ");
+            long acc = sc.nextLong();
+            System.out.print("Enter amount to deposit: ");
+            BigDecimal amount = sc.nextBigDecimal();
+            sc.nextLine();
+
+            PreparedStatement ps = conn.prepareStatement("UPDATE accounts SET balance = balance + ? WHERE account_no = ?");
+            ps.setBigDecimal(1, amount);
+            ps.setLong(2, acc);
+            int updated = ps.executeUpdate();
+
+            if (updated > 0) {
+                logTransaction(conn, acc, "DEPOSIT", amount, null);
+                System.out.println("Deposit successful!");
+            } else {
+                System.out.println("Account not found!");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Withdraw
+    public void withdraw() {
+        try (Connection conn = DBConnection.getConnection()) {
+            System.out.print("Enter account number: ");
+            long acc = sc.nextLong();
+            System.out.print("Enter amount to withdraw: ");
+            BigDecimal amount = sc.nextBigDecimal();
+            sc.nextLine();
+
+            PreparedStatement check = conn.prepareStatement("SELECT balance FROM accounts WHERE account_no = ?");
+            check.setLong(1, acc);
+            ResultSet rs = check.executeQuery();
+
+            if (rs.next()) {
+                BigDecimal balance = rs.getBigDecimal("balance");
+                if (balance.compareTo(amount) >= 0) {
+                    PreparedStatement ps = conn.prepareStatement("UPDATE accounts SET balance = balance - ? WHERE account_no = ?");
+                    ps.setBigDecimal(1, amount);
+                    ps.setLong(2, acc);
+                    ps.executeUpdate();
+                    logTransaction(conn, acc, "WITHDRAW", amount, null);
+                    System.out.println("Withdrawal successful!");
+                } else {
+                    System.out.println("Insufficient balance!");
+                }
+            } else {
+                System.out.println("Account not found!");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Fund Transfer with commit/rollback
+    public void transfer() {
+        try (Connection conn = DBConnection.getConnection()) {
+            conn.setAutoCommit(false);
+
+            System.out.print("Enter FROM account: ");
+            long fromAcc = sc.nextLong();
+            System.out.print("Enter TO account: ");
+            long toAcc = sc.nextLong();
+            System.out.print("Enter amount to transfer: ");
+            BigDecimal amount = sc.nextBigDecimal();
+            sc.nextLine();
+
+            PreparedStatement check = conn.prepareStatement("SELECT balance FROM accounts WHERE account_no = ?");
+            check.setLong(1, fromAcc);
+            ResultSet rs = check.executeQuery();
+
+            if (rs.next()) {
+                BigDecimal balance = rs.getBigDecimal("balance");
+                if (balance.compareTo(amount) >= 0) {
+                    // Debit from sender
+                    PreparedStatement debit = conn.prepareStatement("UPDATE accounts SET balance = balance - ? WHERE account_no = ?");
+                    debit.setBigDecimal(1, amount);
+                    debit.setLong(2, fromAcc);
+                    debit.executeUpdate();
+
+                    // Credit to receiver
+                    PreparedStatement credit = conn.prepareStatement("UPDATE accounts SET balance = balance + ? WHERE account_no = ?");
+                    credit.setBigDecimal(1, amount);
+                    credit.setLong(2, toAcc);
+                    credit.executeUpdate();
+
+                    // Log transactions
+                    logTransaction(conn, fromAcc, "TRANSFER_DEBIT", amount, toAcc);
+                    logTransaction(conn, toAcc, "TRANSFER_CREDIT", amount, fromAcc);
+
+                    conn.commit();
+                    System.out.println("Transfer successful!");
+                } else {
+                    System.out.println("Insufficient balance!");
+                    conn.rollback();
+                }
+            } else {
+                System.out.println("Account not found!");
+                conn.rollback();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Balance Enquiry
+    public void checkBalance() {
+        try (Connection conn = DBConnection.getConnection()) {
+            System.out.print("Enter account number: ");
+            long acc = sc.nextLong();
+            sc.nextLine();
+
+            PreparedStatement ps = conn.prepareStatement("SELECT balance FROM accounts WHERE account_no = ?");
+            ps.setLong(1, acc);
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                System.out.println("Balance: " + rs.getBigDecimal("balance"));
+            } else {
+                System.out.println("Account not found!");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Log Transaction
+    private void logTransaction(Connection conn, long acc, String type, BigDecimal amount, Long related) throws SQLException {
+        PreparedStatement ps = conn.prepareStatement(
+            "INSERT INTO transactions(account_no, type, amount, related_account) VALUES (?, ?, ?, ?)");
+        ps.setLong(1, acc);
+        ps.setString(2, type);
+        ps.setBigDecimal(3, amount);
+        if (related == null) ps.setNull(4, java.sql.Types.BIGINT);
+        else ps.setLong(4, related);
+        ps.executeUpdate();
+    }
+}
